@@ -3,90 +3,174 @@
 #include <iostream>
 #include <thread>
 
-CatNet::CatNet() : read_io_context(), send_io_context(), read_socket(read_io_context), send_socket(send_io_context) {
+CatNet::CatNet() {
+    client.clear_access_channels(websocketpp::log::alevel::all);
+    client.clear_error_channels(websocketpp::log::elevel::all);
+
+    client.init_asio();
+
+    client.set_open_handler([this](const websocketpp::connection_hdl& hdl) {
+        this->open(hdl);
+    });
+
+    client.set_fail_handler([this](const websocketpp::connection_hdl& hdl) {
+        this->fail(hdl);
+    });
+
+    client.set_close_handler([this](const websocketpp::connection_hdl& hdl) {
+        this->close(hdl);
+    });
+    client.set_message_handler([this](const websocketpp::connection_hdl& hdl,
+                                      const websocketpp::client<websocketpp::config::asio_tls_client>::message_ptr& msg) {
+        this->message(hdl, msg);
+    });
+
 }
 
-CatNet::ErrorCode CatNet::init(const std::string& box_ip, int box_port, const std::string& uuid, int milliseconds) {
-    m_key = expandTo16Bytes(uuid);
-    try {
-        box_endpoint = asio::ip::udp::endpoint(asio::ip::address::from_string(box_ip), box_port);
-        send_socket.open(asio::ip::udp::v4());
-        send_socket.bind(asio::ip::udp::endpoint(asio::ip::udp::v4(), box_port));
-        CmdData cmd_data {
-                .cmd = CMD_CONNECT
-        };
-        if (sendCmd(cmd_data) != SUCCESS) {
-            return SEND_FAILED;
-        }
+CatNet::~CatNet() {
+    if (client_thread.joinable()) {
+        client_thread.join();
+    }
+}
 
-        ErrorCode err = receiveAck(milliseconds);
-        if (err != SUCCESS) {
-            return err;
+CatNet::ErrorCode CatNet::init(const std::string &box_ip, int box_port, const std::string &client_pem, const std::string &client_key, const std::string &ca_pem, int milliseconds) {
+    std::string url = "wss://" + box_ip + ":" + std::to_string(box_port);
+
+    asio::const_buffer client_pem_buffer(client_pem.data(), client_pem.size());
+    asio::const_buffer client_key_buffer(client_key.data(), client_key.size());
+    asio::const_buffer ca_pem_buffer(ca_pem.data(), ca_pem.size());
+
+    client.set_tls_init_handler([client_pem_buffer, client_key_buffer, ca_pem_buffer](const websocketpp::connection_hdl&) {
+        std::shared_ptr<asio::ssl::context> ctx = std::make_shared<asio::ssl::context>(asio::ssl::context::tlsv13);
+        try {
+            ctx->set_options(asio::ssl::context::default_workarounds |
+                             asio::ssl::context::no_sslv2 |
+                             asio::ssl::context::no_sslv3 |
+                             asio::ssl::context::no_tlsv1 |
+                             asio::ssl::context::no_tlsv1_1 |
+                             asio::ssl::context::no_tlsv1_2);
+
+            ctx->use_certificate_chain(client_pem_buffer);
+            ctx->use_private_key(client_key_buffer, websocketpp::lib::asio::ssl::context::pem);
+            ctx->add_certificate_authority(ca_pem_buffer);
+            ctx->set_verify_callback([](bool preverified, websocketpp::lib::asio::ssl::verify_context &ctx) {
+                char subject_name[256];
+                X509* cert = X509_STORE_CTX_get_current_cert(ctx.native_handle());
+                X509_NAME_oneline(X509_get_subject_name(cert), subject_name, 256);
+                return preverified;
+            });
+
+            ctx->set_verify_mode(websocketpp::lib::asio::ssl::verify_peer);
+        } catch (std::exception& e) {
+
+        }
+        return ctx;
+    });
+
+    try {
+        auto start_time = std::chrono::steady_clock::now();
+        while (true) {
+            websocketpp::lib::error_code ec;
+            websocketpp::client<websocketpp::config::asio_tls_client>::connection_ptr con =
+                    client.get_connection(url,ec);
+            if (ec) {
+                return INIT_FAILED;
+            }
+
+            client.connect(con);
+            client_thread = std::thread([this]() { client.run(); });
+
+            std::unique_lock<std::mutex> lock(mutex);
+            cv.wait(lock);
+            if (!connected.load()) {
+                if (client_thread.joinable()) {
+                    client_thread.join();
+                }
+                client.reset();
+                if (milliseconds != -1) {
+                    auto elapsed_time = std::chrono::steady_clock::now() - start_time;
+                    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed_time).count();
+                    if (elapsed_ms >= milliseconds) {
+                        return INIT_FAILED;
+                    }
+                }
+            } else {
+                break;
+            }
+
         }
         is_init = true;
         return SUCCESS;
     }
-    catch (const asio::system_error& ) {
-        return SOCKET_FAILED;
+    catch (const std::exception &e) {
+        std::cerr << "Socket error: " << e.what() << std::endl;
+        return INIT_FAILED;
     }
 }
 
-CatNet::ErrorCode CatNet::monitor(int server_port, int milliseconds) {
+void CatNet::uninit() {
+    client.stop();
+    if (client_thread.joinable()) {
+        client_thread.join();
+    }
+}
+
+CatNet::ErrorCode CatNet::monitor() {
     if (!is_init) {
         return INIT_FAILED;
     }
     if (is_monitor) {
         return MONITOR_OPEN;
     }
-    try {
-        server_endpoint = asio::ip::udp::endpoint(asio::ip::udp::v4(), server_port);
-        read_socket.open(asio::ip::udp::v4());
-        read_socket.bind(server_endpoint);
-        CmdData cmd_data {
-                .cmd = CMD_MONITOR,
-                .options = static_cast<uint16_t>(server_port)
-        };
-        startReceive();
-        read_io_context_thread = std::thread([this]() { is_monitor = true; read_io_context.run(); });
-
-        if (sendCmd(cmd_data) != SUCCESS) {
-            return SEND_FAILED;
-        }
-
-        ErrorCode err = receiveAck(milliseconds);
-        if (err != SUCCESS) {
-            closeMonitor();
-            return err;
-        }
+    CmdData cmd_data {
+            .cmd = CMD_MONITOR,
+            .options = 0x01
+    };
+    if (sendCmd(cmd_data) == SUCCESS) {
+        is_monitor = true;
         return SUCCESS;
     }
-    catch (const asio::system_error& e) {
-        std::cerr << "Socket error: " << e.what() << std::endl;
-        return SOCKET_FAILED;
-    }
+    return SEND_FAILED;
 }
 
-void CatNet::closeMonitor() {
+CatNet::ErrorCode CatNet::closeMonitor() {
     if (is_monitor) {
-        read_socket.close();
-        read_io_context.stop();
-        if (read_io_context_thread.joinable()) {
-            read_io_context_thread.join();
+        CmdData cmd_data {
+                .cmd = CMD_MONITOR,
+                .options = 0x00
+        };
+        if (sendCmd(cmd_data) == SUCCESS) {
+            is_monitor = false;
+            return SUCCESS;
         }
-        read_io_context.restart();
-        is_monitor = false;
+        return SEND_FAILED;
     }
 }
 
-void CatNet::hidHandle(std::size_t receive_len) {
-    if (receive_len < AES_BLOCK_SIZE) {
-        return;
+void CatNet::open(const websocketpp::connection_hdl& hdl) {
+    connected.store(true);
+    cv.notify_all();
+    server_hdl = hdl;
+}
+
+void CatNet::fail(const websocketpp::connection_hdl& hdl) {
+    connected.store(false);
+    cv.notify_all();
+}
+
+void CatNet::close(const websocketpp::connection_hdl& hdl) {
+    if (hdl.lock() == server_hdl.lock()) {
+        connected.store(false);
     }
-    const auto* encrypt_buf = reinterpret_cast<const unsigned char*>(buffer.data());
-    unsigned char buf[1024];
-    int len = aes128CBCDecrypt(encrypt_buf, static_cast<int>(receive_len), m_key, buf);
+}
+
+void CatNet::message(const websocketpp::connection_hdl&,
+             const websocketpp::client<websocketpp::config::asio_tls_client>::message_ptr& msg) {
+    std::string payload = msg->get_payload();
+    const auto *buf = reinterpret_cast<const unsigned char *>(payload.c_str());
+
     HidData hid_data{};
-    if (len >= sizeof(HidData)) {
+    if (payload.size() >= sizeof(HidData)) {
         std::memcpy(&hid_data, buf, sizeof(HidData));
     } else {
         return;
@@ -99,72 +183,15 @@ void CatNet::hidHandle(std::size_t receive_len) {
     lock_state = hid_data.keyboard_data.lock;
 }
 
-void CatNet::startReceive() {
-    read_socket.async_receive_from(
-            asio::buffer(buffer), server_endpoint,
-            [this](asio::error_code, std::size_t len) {
-                if (len > 0) {
-                    hidHandle(len);
-                }
-                startReceive();
-            });
-}
-
-CatNet::ErrorCode CatNet::receiveAck(int milliseconds) {
-    std::array<char, 1024> buf{};
-    int sock_fd = static_cast<int>(send_socket.native_handle());
-
-    timeval timeout{};
-    timeval *timeout_ptr = nullptr;
-
-    if (milliseconds != -1) {
-        timeout.tv_sec = milliseconds / 1000;
-        timeout.tv_usec = (milliseconds % 1000) * 1000;
-        timeout_ptr = &timeout;
-    }
-
-    fd_set read_fds;
-    FD_ZERO(&read_fds);
-    FD_SET(sock_fd, &read_fds);
-    int result = select(sock_fd + 1, &read_fds, nullptr, nullptr, timeout_ptr);
-    if (result > 0) {
-        size_t len = send_socket.receive_from(asio::buffer(buf), box_endpoint);
-        if (len > 0) {
-            const auto *encrypt_buf = reinterpret_cast<const unsigned char *>(buf.data());
-            unsigned char decrypt_buf[1024];
-            int decrypt_len = aes128CBCDecrypt(encrypt_buf, static_cast<int>(len), m_key, decrypt_buf);
-            if (decrypt_len > 0) {
-                return SUCCESS;
-            }
-        }
-    } else if (result == 0) {
-        return RECEIVE_TIMEOUT;
-    }
-    return RECEIVE_FAILED;
-}
-
 CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
-    if (!send_socket.is_open()) {
-        return SOCKET_FAILED;
-    }
-    unsigned char iv[AES_BLOCK_SIZE];
-    RAND_bytes(iv, AES_BLOCK_SIZE);
     unsigned char cmd_buf[sizeof(CmdData)];
     memcpy(cmd_buf, &data, sizeof(CmdData));
-
-    unsigned char encrypt_buf[1024];
-    int encrypt_len = aes128CBCEncrypt(cmd_buf, sizeof(CmdData), m_key, iv, encrypt_buf);
-
-    if (encrypt_len <= 0) {
-        return DECRYPTION_FAILED;
-    }
-
-    try {
-        send_socket.send_to(asio::buffer(encrypt_buf, encrypt_len), box_endpoint);
-        return SUCCESS;
-    } catch (asio::system_error &) {
+    websocketpp::lib::error_code ec;
+    client.send(server_hdl, cmd_buf, sizeof(CmdData),websocketpp::frame::opcode::binary, ec);
+    if (ec) {
         return SEND_FAILED;
     }
+    return SUCCESS;
 }
 
 CatNet::ErrorCode CatNet::mouseMove(int16_t x, int16_t y) {
@@ -189,8 +216,7 @@ CatNet::ErrorCode CatNet::mouseMoveAuto(int16_t x, int16_t y, int16_t ms) {
     cmd_data.options = ms;
     cmd_data.value1 = x;
     cmd_data.value2 = y;
-    sendCmd(cmd_data);
-    return receiveAck(ms + 500);
+    return sendCmd(cmd_data);
 }
 
 CatNet::ErrorCode CatNet::mouseButton(uint16_t code, uint16_t value) {
@@ -268,7 +294,7 @@ bool CatNet::isLockKeyPressed(uint16_t code) const {
     return (lock_state & code) != 0;
 }
 
-CatNet::ErrorCode  CatNet::blockedMouse(uint16_t code, uint16_t value) {
+CatNet::ErrorCode CatNet::blockedMouse(uint16_t code, uint16_t value) {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -281,7 +307,7 @@ CatNet::ErrorCode  CatNet::blockedMouse(uint16_t code, uint16_t value) {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
+CatNet::ErrorCode CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -294,7 +320,7 @@ CatNet::ErrorCode  CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::unblockedMouseAll() {
+CatNet::ErrorCode CatNet::unblockedMouseAll() {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -304,7 +330,7 @@ CatNet::ErrorCode  CatNet::unblockedMouseAll() {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::unblockedKeyboardAll() {
+CatNet::ErrorCode CatNet::unblockedKeyboardAll() {
     if (!is_init) {
         return INIT_FAILED;
     }

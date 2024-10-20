@@ -2,6 +2,8 @@
 #define CAT_NET_H
 
 #include <asio.hpp>
+#include <websocketpp/client.hpp>
+#include <websocketpp/config/asio_client.hpp>
 #include <cctype>
 #include <sstream>
 #include <iomanip>
@@ -196,28 +198,31 @@ public:
 
     CatNet();
 
+    ~CatNet();
+
     /**
      * 初始化函数 超时请检查UUID是否正确
      * @param box_ip 盒子ip
      * @param box_port 盒子端口
-     * @param uuid 盒子uuid
      * @param seconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
      * @return ErrorCode
      */
-    ErrorCode init(const std::string& box_ip, int box_port, const std::string& uuid, int milliseconds = 5000);
+    ErrorCode init(const std::string &box_ip, int box_port, const std::string &client_pem, const std::string &client_key, const std::string &ca_pem, int milliseconds = 5000);
+
+    /**
+     * 销毁
+     */
+    void uninit();
 
     /**
      * 开启鼠键事件监听
-     * @param server_port 本机监听的端口
-     * @param seconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
-     * @return ErrorCode
      */
-    ErrorCode monitor(int server_port, int milliseconds = 5000);
+    ErrorCode monitor();
 
     /**
      * 关闭键鼠事件监听
      */
-    void closeMonitor();
+    CatNet::ErrorCode closeMonitor();
 
     // 控制部分
     /**
@@ -323,95 +328,28 @@ public:
 private:
     bool is_init = false;
     bool is_monitor = false;
-    asio::io_context read_io_context;
-    asio::ip::udp::socket read_socket;
-    asio::ip::udp::endpoint server_endpoint;
-    asio::io_context send_io_context;
-    asio::ip::udp::socket send_socket;
-    asio::ip::udp::endpoint box_endpoint;
-    std::thread read_io_context_thread;
-    std::array<char, 1024> buffer{};
-
-    const unsigned char *m_key{};
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::atomic<bool> connected = false;
+    websocketpp::client<websocketpp::config::asio_tls_client> client;
+    websocketpp::connection_hdl server_hdl;
+    std::thread client_thread;
 
     MouseStateManager mouse_state;
     KeyStateManager keyboard_state;
     uint8_t lock_state{};
 
 private:
-    void startReceive();
+    void open(const websocketpp::connection_hdl& hdl);
+
+    void fail(const websocketpp::connection_hdl& hdl);
+
+    void close(const websocketpp::connection_hdl& hdl);
+
+    void message(const websocketpp::connection_hdl& hdl,
+                 const websocketpp::client<websocketpp::config::asio_tls_client>::message_ptr& msg);
 
     ErrorCode sendCmd(CmdData data);
-
-    void hidHandle(std::size_t receive_len);
-
-    ErrorCode receiveAck(int milliseconds);
-
-    static int aes128CBCEncrypt(const unsigned char *buf, int buf_len, const unsigned char *key, const unsigned char *iv,
-                                unsigned char *encrypt_buf) {
-        EVP_CIPHER_CTX *ctx;
-
-        int len;
-        int ciphertext_len;
-        memcpy(encrypt_buf, iv, AES_BLOCK_SIZE);
-
-        ctx = EVP_CIPHER_CTX_new();
-
-        EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv);
-
-        EVP_EncryptUpdate(ctx, encrypt_buf + AES_BLOCK_SIZE, &len, buf, buf_len);
-        ciphertext_len = len;
-
-        EVP_EncryptFinal_ex(ctx, encrypt_buf + AES_BLOCK_SIZE + len, &len);
-        ciphertext_len += len;
-
-        ciphertext_len += AES_BLOCK_SIZE;
-
-        EVP_CIPHER_CTX_free(ctx);
-
-        return ciphertext_len;
-    }
-
-    static int aes128CBCDecrypt(const unsigned char *encrypt_buf, int encrypt_buf_len, const unsigned char *key,
-                                unsigned char *decrypt_buf) {
-        EVP_CIPHER_CTX *ctx;
-
-        int len;
-        int decryptBufLen;
-
-        unsigned char iv[AES_BLOCK_SIZE];
-        memcpy(iv, encrypt_buf, AES_BLOCK_SIZE);
-
-        ctx = EVP_CIPHER_CTX_new();
-
-        EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv);
-
-        EVP_DecryptUpdate(ctx, decrypt_buf, &len, encrypt_buf + AES_BLOCK_SIZE, encrypt_buf_len - AES_BLOCK_SIZE);
-        decryptBufLen = len;
-
-        EVP_DecryptFinal_ex(ctx, decrypt_buf + len, &len);
-        decryptBufLen += len;
-
-        EVP_CIPHER_CTX_free(ctx);
-
-        return decryptBufLen;
-    }
-
-    static unsigned char *expandTo16Bytes(const std::string& cat_uuid) {
-        auto uuid = static_cast<uint32_t>(std::stoul(cat_uuid, nullptr, 16));
-        static unsigned char enc_key[16];
-        std::memset(enc_key, 0, sizeof(enc_key));
-
-        std::stringstream ss_uuid;
-        ss_uuid << std::hex << std::setw(8) << std::setfill('0') << uuid;
-        std::string str_uuid = ss_uuid.str();
-
-        for (size_t i = 0; i < 16; ++i) {
-            enc_key[i] = (i < str_uuid.size()) ? str_uuid[i] : '0';
-        }
-
-        return enc_key;
-    }
 };
 
 #endif //CAT_NET_H

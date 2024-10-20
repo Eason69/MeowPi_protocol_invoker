@@ -3,11 +3,22 @@
 #include "cat_net.h"
 
 int main() {
+     std::string cert_chain = R"()";
+
+    std::string private_key = R"()";
+
+    std::string ca_cert = R"()";
+
     CatNet cat_net;
-    CatNet::ErrorCode err = cat_net.init("192.168.7.2", 12345, "123456");
+    CatNet::ErrorCode err = cat_net.init("192.168.7.2", 12345, cert_chain, private_key, ca_cert, 5000);
     std::cout << "code:" << err << std::endl;
-    err = cat_net.monitor(1234);
+    err = cat_net.monitor();
     std::cout << "code:" << err << std::endl;
+
+    for (int i = 0; i < 20000; i++) {
+        cat_net.mouseMove(-1, 0);
+    }
+
     cat_net.blockedKeyboard(KEY_A, 1);
     while (1) {
         if (cat_net.isKeyboardPressed(KEY_A)) {

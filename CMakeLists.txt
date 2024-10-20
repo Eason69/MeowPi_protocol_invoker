@@ -5,7 +5,6 @@ set(CMAKE_CXX_STANDARD 20)
 
 add_executable(MeowPi_protocol_invoker main.cpp cat_net.cpp)
 
-find_package(asio CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
+include(${CMAKE_SOURCE_DIR}/3rdparty/3rdparty.cmake)
 
-target_link_libraries(MeowPi_protocol_invoker PRIVATE ws2_32 asio::asio OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(MeowPi_protocol_invoker PRIVATE ws2_32 ${OPENSSL_ROOT_DIR}/lib/libcrypto.lib ${OPENSSL_ROOT_DIR}/lib/libssl.lib crypt32.lib advapi32.lib)
