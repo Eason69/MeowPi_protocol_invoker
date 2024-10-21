@@ -4,8 +4,8 @@
 #include <thread>
 
 CatNet::CatNet() {
-    client.clear_access_channels(websocketpp::log::alevel::all);
-    client.clear_error_channels(websocketpp::log::elevel::all);
+    // client.clear_access_channels(websocketpp::log::alevel::all);
+    // client.clear_error_channels(websocketpp::log::elevel::all);
 
     client.init_asio();
 
@@ -33,7 +33,7 @@ CatNet::~CatNet() {
     }
 }
 
-CatNet::ErrorCode CatNet::init(const std::string &box_ip, int box_port, const std::string &client_pem, const std::string &client_key, const std::string &ca_pem, int milliseconds) {
+CatNet::ErrorCode CatNet::run(const std::string &box_ip, int box_port, const std::string &client_pem, const std::string &client_key, const std::string &ca_pem, int milliseconds) {
     std::string url = "wss://" + box_ip + ":" + std::to_string(box_port);
 
     asio::const_buffer client_pem_buffer(client_pem.data(), client_pem.size());
@@ -69,7 +69,7 @@ CatNet::ErrorCode CatNet::init(const std::string &box_ip, int box_port, const st
 
     try {
         auto start_time = std::chrono::steady_clock::now();
-        while (true) {
+        while (!is_stop) {
             websocketpp::lib::error_code ec;
             websocketpp::client<websocketpp::config::asio_tls_client>::connection_ptr con =
                     client.get_connection(url,ec);
@@ -78,7 +78,11 @@ CatNet::ErrorCode CatNet::init(const std::string &box_ip, int box_port, const st
             }
 
             client.connect(con);
-            client_thread = std::thread([this]() { client.run(); });
+            client_thread = std::thread([this]() {
+                try {
+                    client.run();
+                } catch (const std::exception&) {}
+            });
 
             std::unique_lock<std::mutex> lock(mutex);
             cv.wait(lock);
@@ -108,10 +112,13 @@ CatNet::ErrorCode CatNet::init(const std::string &box_ip, int box_port, const st
     }
 }
 
-void CatNet::uninit() {
-    client.stop();
-    if (client_thread.joinable()) {
-        client_thread.join();
+void CatNet::stop() {
+    is_stop = true;
+    if (is_init) {
+        client.stop();
+        if (client_thread.joinable()) {
+            client_thread.join();
+        }
     }
 }
 
@@ -145,6 +152,7 @@ CatNet::ErrorCode CatNet::closeMonitor() {
         }
         return SEND_FAILED;
     }
+    return MONITOR_CLOSE;
 }
 
 void CatNet::open(const websocketpp::connection_hdl& hdl) {

@@ -163,21 +163,21 @@ public:
         /**
          * @brief 初始化失败
          *
-         * 表示系统或网络模块初始化失败。
+         * 表示网络模块初始化失败。
          */
         INIT_FAILED = 300,
 
         /**
          * @brief 监听未开启
          *
-         * 表示监视器没有正确启动。
+         * 表示监听没有正确启动。
          */
         MONITOR_CLOSE = 301,
 
         /**
          * @brief 监听已开启
          *
-         * 表示监视器已经成功开启。
+         * 表示监听已经成功开启。
          */
         MONITOR_OPEN = 302,
 
@@ -204,15 +204,18 @@ public:
      * 初始化函数 超时请检查UUID是否正确
      * @param box_ip 盒子ip
      * @param box_port 盒子端口
-     * @param seconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
+     * @param client_pem 客户端证书
+     * @param client_key 客户端密钥
+     * @param ca_pem Ca证书
+     * @param milliseconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
      * @return ErrorCode
      */
-    ErrorCode init(const std::string &box_ip, int box_port, const std::string &client_pem, const std::string &client_key, const std::string &ca_pem, int milliseconds = 5000);
+    ErrorCode run(const std::string &box_ip, int box_port, const std::string &client_pem, const std::string &client_key, const std::string &ca_pem, int milliseconds = 5000);
 
     /**
      * 销毁
      */
-    void uninit();
+    void stop();
 
     /**
      * 开启鼠键事件监听
@@ -328,6 +331,7 @@ public:
 private:
     bool is_init = false;
     bool is_monitor = false;
+    bool is_stop = false;
     std::mutex mutex;
     std::condition_variable cv;
     std::atomic<bool> connected = false;
