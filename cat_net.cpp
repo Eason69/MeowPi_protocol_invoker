@@ -4,8 +4,8 @@
 #include <thread>
 
 CatNet::CatNet() {
-    // client.clear_access_channels(websocketpp::log::alevel::all);
-    // client.clear_error_channels(websocketpp::log::elevel::all);
+    client.clear_access_channels(websocketpp::log::alevel::all);
+    client.clear_error_channels(websocketpp::log::elevel::all);
 
     client.init_asio();
 

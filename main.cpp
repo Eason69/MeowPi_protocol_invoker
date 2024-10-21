@@ -10,7 +10,7 @@ int main() {
     std::string ca_cert = R"()";
 
     CatNet cat_net;
-    CatNet::ErrorCode err = cat_net.run("192.168.188.4", 2000, cert_chain, private_key, ca_cert, 5000);
+    CatNet::ErrorCode err = cat_net.run("192.168.7.2", 12345, cert_chain, private_key, ca_cert, 5000);
     std::cout << "code:" << err << std::endl;
     if (err != CatNet::SUCCESS) {
         return 0;

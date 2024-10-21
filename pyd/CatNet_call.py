@@ -1,13 +1,22 @@
 import time
 import signal
 import sys
-import catNet
-import event_code #按键头文件
+import catNetWs
+import event_code
 
-net = catNet.CatNet()
-net.init("192.168.7.2",12345,"0fdccbf0",10)
+cert_chain = """
+"""
+private_key = """"
+"""
 
-net.monitor(1244, 10) #开启键鼠监听
+ca_cert = """"
+"""
+
+
+net = catNetWs.CatNet()
+code = net.run("192.168.7.2",12345,cert_chain,private_key, ca_cert, 5000)
+print(code)
+net.monitor() #开启键鼠监听
 
 net.blockedKeyboard(event_code.KEY_A, 1) #屏蔽按键A
 net.blockedKeyboard(event_code.KEY_D, 1) #屏蔽按键D
@@ -23,6 +32,7 @@ def signal_handler(sig, frame):
     print('捕获到 Ctrl+C，正在解除所有按键屏蔽...')
     net.unblockedKeyboardAll() # 解除键盘所有屏蔽按键
     net.unblockedMouseAll() # 解除鼠标所有屏蔽按键
+    net.stop()
     sys.exit(0)
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -36,7 +46,7 @@ while 1:
         net.keyboardButton(event_code.KEY_S, 0)  #模拟按键S释放
 
     if net.isKeyboardPressed(event_code.KEY_D) == 1:
-        print('D按下') 
+        print('D按下')
 
     if net.isMousePressed(event_code.BTN_LEFT) == 1:
         net.mouseMove(1, 2)
