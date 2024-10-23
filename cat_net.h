@@ -356,13 +356,25 @@ private:
         memcpy(encrypt_buf, iv, AES_BLOCK_SIZE);
 
         ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) {
+            return -1;
+        }
 
-        EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv);
+        if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return -1;
+        }
 
-        EVP_EncryptUpdate(ctx, encrypt_buf + AES_BLOCK_SIZE, &len, buf, buf_len);
+        if (EVP_EncryptUpdate(ctx, encrypt_buf + AES_BLOCK_SIZE, &len, buf, buf_len) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return -1;
+        }
         ciphertext_len = len;
 
-        EVP_EncryptFinal_ex(ctx, encrypt_buf + AES_BLOCK_SIZE + len, &len);
+        if (EVP_EncryptFinal_ex(ctx, encrypt_buf + AES_BLOCK_SIZE + len, &len) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return -1;
+        }
         ciphertext_len += len;
 
         ciphertext_len += AES_BLOCK_SIZE;
@@ -383,13 +395,25 @@ private:
         memcpy(iv, encrypt_buf, AES_BLOCK_SIZE);
 
         ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) {
+            return -1;
+        }
 
-        EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv);
+        if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return -1;
+        }
 
-        EVP_DecryptUpdate(ctx, decrypt_buf, &len, encrypt_buf + AES_BLOCK_SIZE, encrypt_buf_len - AES_BLOCK_SIZE);
+        if (EVP_DecryptUpdate(ctx, decrypt_buf, &len, encrypt_buf + AES_BLOCK_SIZE, encrypt_buf_len - AES_BLOCK_SIZE) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return -1;
+        }
         decryptBufLen = len;
 
-        EVP_DecryptFinal_ex(ctx, decrypt_buf + len, &len);
+        if (EVP_DecryptFinal_ex(ctx, decrypt_buf + len, &len) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return -1;
+        }
         decryptBufLen += len;
 
         EVP_CIPHER_CTX_free(ctx);

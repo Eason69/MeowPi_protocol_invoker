@@ -15,11 +15,12 @@ CatNet::ErrorCode CatNet::init(const std::string& box_ip, int box_port, const st
         CmdData cmd_data {
                 .cmd = CMD_CONNECT
         };
-        if (sendCmd(cmd_data) != SUCCESS) {
-            return SEND_FAILED;
+        ErrorCode err = sendCmd(cmd_data);
+        if (err != SUCCESS) {
+            return err;
         }
 
-        ErrorCode err = receiveAck(milliseconds);
+        err = receiveAck(milliseconds);
         if (err != SUCCESS) {
             return err;
         }
@@ -49,11 +50,12 @@ CatNet::ErrorCode CatNet::monitor(int server_port, int milliseconds) {
         startReceive();
         read_io_context_thread = std::thread([this]() { is_monitor = true; read_io_context.run(); });
 
-        if (sendCmd(cmd_data) != SUCCESS) {
-            return SEND_FAILED;
+        ErrorCode err = sendCmd(cmd_data);
+        if (err != SUCCESS) {
+            return err;
         }
 
-        ErrorCode err = receiveAck(milliseconds);
+        err = receiveAck(milliseconds);
         if (err != SUCCESS) {
             closeMonitor();
             return err;
@@ -156,7 +158,7 @@ CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
     int encrypt_len = aes128CBCEncrypt(cmd_buf, sizeof(CmdData), m_key, iv, encrypt_buf);
 
     if (encrypt_len <= 0) {
-        return DECRYPTION_FAILED;
+        return ENCRYPTION_FAILED;
     }
 
     try {
