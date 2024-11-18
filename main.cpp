@@ -4,9 +4,9 @@
 
 int main() {
     CatNet cat_net;
-    CatNet::ErrorCode err = cat_net.init("192.168.7.2", 12345, "123456");
+    CatNet::ErrorCode err = cat_net.init("192.168.7.1", 12345, "123456");
     std::cout << "code:" << err << std::endl;
-    err = cat_net.monitor(1234);
+    err = cat_net.monitor();
     std::cout << "code:" << err << std::endl;
     cat_net.blockedKeyboard(KEY_A, 1);
     while (1) {

@@ -3,27 +3,37 @@
 #include <iostream>
 #include <thread>
 
-CatNet::CatNet() : read_io_context(), send_io_context(), read_socket(read_io_context), send_socket(send_io_context) {
+CatNet::CatNet() : send_socket(send_io_context) {
 }
 
 CatNet::ErrorCode CatNet::init(const std::string& box_ip, int box_port, const std::string& uuid, int milliseconds) {
     m_key = expandTo16Bytes(uuid);
     try {
-        box_endpoint = asio::ip::udp::endpoint(asio::ip::address::from_string(box_ip), box_port);
-        send_socket.open(asio::ip::udp::v4());
-        send_socket.bind(asio::ip::udp::endpoint(asio::ip::udp::v4(), box_port));
-        CmdData cmd_data {
-                .cmd = CMD_CONNECT
-        };
-        ErrorCode err = sendCmd(cmd_data);
-        if (err != SUCCESS) {
-            return err;
+        auto box_endpoint = asio::ip::tcp::endpoint(asio::ip::address::from_string(box_ip), box_port);
+        asio::steady_timer timer(send_io_context);
+        bool timed_out = false;
+
+        timer.expires_after(std::chrono::milliseconds(milliseconds));
+        timer.async_wait([&](const asio::error_code& error) {
+            if (!error) {
+                timed_out = true;
+                send_socket.close(); // Cancel the connection
+            }
+        });
+
+        asio::error_code ec;
+        send_socket.async_connect(box_endpoint, [&](const asio::error_code& error) {
+            ec = error;
+        });
+
+        send_io_context.run();
+
+        if (timed_out) {
+            return SOCKET_TIMEOUT;
         }
 
-        err = receiveAck(milliseconds);
-        if (err != SUCCESS) {
-            return err;
-        }
+        startReceive();
+        read_io_context_thread = std::thread([this] { send_io_context.run(); });
         is_init = true;
         return SUCCESS;
     }
@@ -32,7 +42,18 @@ CatNet::ErrorCode CatNet::init(const std::string& box_ip, int box_port, const st
     }
 }
 
-CatNet::ErrorCode CatNet::monitor(int server_port, int milliseconds) {
+void CatNet::unInit() {
+    send_io_context.stop();
+    if (read_io_context_thread.joinable()) {
+        read_io_context_thread.join();
+    }
+    if (send_socket.is_open()) {
+        send_socket.close();
+    }
+    send_io_context.restart();
+}
+
+CatNet::ErrorCode CatNet::monitor() {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -40,27 +61,15 @@ CatNet::ErrorCode CatNet::monitor(int server_port, int milliseconds) {
         return MONITOR_OPEN;
     }
     try {
-        server_endpoint = asio::ip::udp::endpoint(asio::ip::udp::v4(), server_port);
-        read_socket.open(asio::ip::udp::v4());
-        read_socket.bind(server_endpoint);
         CmdData cmd_data {
-                .cmd = CMD_MONITOR,
-                .options = static_cast<uint16_t>(server_port)
+            .cmd = CMD_MONITOR,
+            .options = 0x01
         };
-        startReceive();
-        read_io_context_thread = std::thread([this]() { is_monitor = true; read_io_context.run(); });
-
-        ErrorCode err = sendCmd(cmd_data);
-        if (err != SUCCESS) {
-            return err;
+        if (sendCmd(cmd_data) == SUCCESS) {
+            is_monitor = true;
+            return SUCCESS;
         }
-
-        err = receiveAck(milliseconds);
-        if (err != SUCCESS) {
-            closeMonitor();
-            return err;
-        }
-        return SUCCESS;
+        return SEND_FAILED;
     }
     catch (const asio::system_error& e) {
         std::cerr << "Socket error: " << e.what() << std::endl;
@@ -68,16 +77,19 @@ CatNet::ErrorCode CatNet::monitor(int server_port, int milliseconds) {
     }
 }
 
-void CatNet::closeMonitor() {
+CatNet::ErrorCode CatNet::closeMonitor() {
     if (is_monitor) {
-        read_socket.close();
-        read_io_context.stop();
-        if (read_io_context_thread.joinable()) {
-            read_io_context_thread.join();
+        CmdData cmd_data {
+            .cmd = CMD_MONITOR,
+            .options = 0x00
+        };
+        if (sendCmd(cmd_data) == SUCCESS) {
+            is_monitor = false;
+            return SUCCESS;
         }
-        read_io_context.restart();
-        is_monitor = false;
+        return SEND_FAILED;
     }
+    return MONITOR_CLOSE;
 }
 
 void CatNet::hidHandle(std::size_t receive_len) {
@@ -102,8 +114,8 @@ void CatNet::hidHandle(std::size_t receive_len) {
 }
 
 void CatNet::startReceive() {
-    read_socket.async_receive_from(
-            asio::buffer(buffer), server_endpoint,
+    send_socket.async_receive(
+            asio::buffer(buffer),
             [this](asio::error_code, std::size_t len) {
                 if (len > 0) {
                     hidHandle(len);
@@ -130,7 +142,7 @@ CatNet::ErrorCode CatNet::receiveAck(int milliseconds) {
     FD_SET(sock_fd, &read_fds);
     int result = select(sock_fd + 1, &read_fds, nullptr, nullptr, timeout_ptr);
     if (result > 0) {
-        size_t len = send_socket.receive_from(asio::buffer(buf), box_endpoint);
+        size_t len = send_socket.receive(asio::buffer(buf));
         if (len > 0) {
             const auto *encrypt_buf = reinterpret_cast<const unsigned char *>(buf.data());
             unsigned char decrypt_buf[1024];
@@ -162,7 +174,7 @@ CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
     }
 
     try {
-        send_socket.send_to(asio::buffer(encrypt_buf, encrypt_len), box_endpoint);
+        asio::write(send_socket, asio::buffer(encrypt_buf, encrypt_len));
         return SUCCESS;
     } catch (asio::system_error &) {
         return SEND_FAILED;

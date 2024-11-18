@@ -206,18 +206,20 @@ public:
      */
     ErrorCode init(const std::string& box_ip, int box_port, const std::string& uuid, int milliseconds = 5000);
 
+    void unInit();
+
     /**
      * 开启鼠键事件监听
      * @param server_port 本机监听的端口
      * @param seconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
      * @return ErrorCode
      */
-    ErrorCode monitor(int server_port, int milliseconds = 5000);
+    ErrorCode monitor();
 
     /**
      * 关闭键鼠事件监听
      */
-    void closeMonitor();
+    ErrorCode closeMonitor();
 
     // 控制部分
     /**
@@ -323,12 +325,9 @@ public:
 private:
     bool is_init = false;
     bool is_monitor = false;
-    asio::io_context read_io_context;
-    asio::ip::udp::socket read_socket;
-    asio::ip::udp::endpoint server_endpoint;
+
     asio::io_context send_io_context;
-    asio::ip::udp::socket send_socket;
-    asio::ip::udp::endpoint box_endpoint;
+    asio::ip::tcp::socket send_socket;
     std::thread read_io_context_thread;
     std::array<char, 1024> buffer{};
 
