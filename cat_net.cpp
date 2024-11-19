@@ -62,8 +62,7 @@ CatNet::ErrorCode CatNet::monitor(int server_port, int milliseconds) {
         }
         return SUCCESS;
     }
-    catch (const asio::system_error& e) {
-        std::cerr << "Socket error: " << e.what() << std::endl;
+    catch (const asio::system_error&) {
         return SOCKET_FAILED;
     }
 }
@@ -150,7 +149,7 @@ CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
         return SOCKET_FAILED;
     }
     unsigned char iv[AES_BLOCK_SIZE];
-    RAND_bytes(iv, AES_BLOCK_SIZE);
+    generateRandomIV(iv, AES_BLOCK_SIZE);
     unsigned char cmd_buf[sizeof(CmdData)];
     memcpy(cmd_buf, &data, sizeof(CmdData));
 
@@ -162,8 +161,10 @@ CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
     }
 
     try {
-        send_socket.send_to(asio::buffer(encrypt_buf, encrypt_len), box_endpoint);
-        return SUCCESS;
+        std::size_t size = send_socket.send_to(asio::buffer(encrypt_buf, encrypt_len), box_endpoint);
+        if (size <= 0) {
+            return SEND_FAILED;
+        }
     } catch (asio::system_error &) {
         return SEND_FAILED;
     }
@@ -263,14 +264,14 @@ bool CatNet::isKeyboardPressed(uint16_t code) {
     return keyboard_state.isKeyPressed(code);
 }
 
-bool CatNet::isLockKeyPressed(uint16_t code) const {
+bool CatNet::isLockKeyPressed(uint16_t code) {
     if (!is_monitor) {
         return false;
     }
     return (lock_state & code) != 0;
 }
 
-CatNet::ErrorCode  CatNet::blockedMouse(uint16_t code, uint16_t value) {
+CatNet::ErrorCode CatNet::blockedMouse(uint16_t code, uint16_t value) {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -283,7 +284,7 @@ CatNet::ErrorCode  CatNet::blockedMouse(uint16_t code, uint16_t value) {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
+CatNet::ErrorCode CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -296,7 +297,7 @@ CatNet::ErrorCode  CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::unblockedMouseAll() {
+CatNet::ErrorCode CatNet::unblockedMouseAll() {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -306,7 +307,7 @@ CatNet::ErrorCode  CatNet::unblockedMouseAll() {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::unblockedKeyboardAll() {
+CatNet::ErrorCode CatNet::unblockedKeyboardAll() {
     if (!is_init) {
         return INIT_FAILED;
     }
