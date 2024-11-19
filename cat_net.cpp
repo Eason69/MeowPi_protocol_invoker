@@ -15,15 +15,11 @@ CatNet::ErrorCode CatNet::init(const std::string& box_ip, int box_port, const st
         CmdData cmd_data {
                 .cmd = CMD_CONNECT
         };
-        ErrorCode err = sendCmd(cmd_data);
+        ErrorCode err = sendCmd(cmd_data, milliseconds);
         if (err != SUCCESS) {
             return err;
         }
 
-        err = receiveAck(milliseconds);
-        if (err != SUCCESS) {
-            return err;
-        }
         is_init = true;
         return SUCCESS;
     }
@@ -50,20 +46,15 @@ CatNet::ErrorCode CatNet::monitor(int server_port, int milliseconds) {
         startReceive();
         read_io_context_thread = std::thread([this]() { is_monitor = true; read_io_context.run(); });
 
-        ErrorCode err = sendCmd(cmd_data);
-        if (err != SUCCESS) {
-            return err;
-        }
-
-        err = receiveAck(milliseconds);
+        ErrorCode err = sendCmd(cmd_data, milliseconds);
         if (err != SUCCESS) {
             closeMonitor();
             return err;
         }
+
         return SUCCESS;
     }
-    catch (const asio::system_error& e) {
-        std::cerr << "Socket error: " << e.what() << std::endl;
+    catch (const asio::system_error&) {
         return SOCKET_FAILED;
     }
 }
@@ -112,7 +103,7 @@ void CatNet::startReceive() {
             });
 }
 
-CatNet::ErrorCode CatNet::receiveAck(int milliseconds) {
+CatNet::ErrorCode CatNet::receiveAck(CmdData data, int milliseconds) {
     std::array<char, 1024> buf{};
     int sock_fd = static_cast<int>(send_socket.native_handle());
 
@@ -134,10 +125,15 @@ CatNet::ErrorCode CatNet::receiveAck(int milliseconds) {
         if (len > 0) {
             const auto *encrypt_buf = reinterpret_cast<const unsigned char *>(buf.data());
             unsigned char decrypt_buf[1024];
+            CmdData cmdData{};
             int decrypt_len = aes128CBCDecrypt(encrypt_buf, static_cast<int>(len), m_key, decrypt_buf);
-            if (decrypt_len > 0) {
-                return SUCCESS;
+            if (decrypt_len >= sizeof(CmdData)) {
+                std::memcpy(&cmdData, decrypt_buf, sizeof(CmdData));
+                if (cmdData.cmd == data.cmd) {
+                    return SUCCESS;
+                }
             }
+            return RECEIVE_FAILED;
         }
     } else if (result == 0) {
         return RECEIVE_TIMEOUT;
@@ -145,12 +141,12 @@ CatNet::ErrorCode CatNet::receiveAck(int milliseconds) {
     return RECEIVE_FAILED;
 }
 
-CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
+CatNet::ErrorCode CatNet::sendCmd(CmdData data, int milliseconds) {
     if (!send_socket.is_open()) {
         return SOCKET_FAILED;
     }
     unsigned char iv[AES_BLOCK_SIZE];
-    RAND_bytes(iv, AES_BLOCK_SIZE);
+    generateRandomIV(iv, AES_BLOCK_SIZE);
     unsigned char cmd_buf[sizeof(CmdData)];
     memcpy(cmd_buf, &data, sizeof(CmdData));
 
@@ -162,8 +158,11 @@ CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
     }
 
     try {
-        send_socket.send_to(asio::buffer(encrypt_buf, encrypt_len), box_endpoint);
-        return SUCCESS;
+        std::size_t size = send_socket.send_to(asio::buffer(encrypt_buf, encrypt_len), box_endpoint);
+        if (size <= 0) {
+            return SEND_FAILED;
+        }
+        return receiveAck(data, milliseconds);
     } catch (asio::system_error &) {
         return SEND_FAILED;
     }
@@ -191,8 +190,7 @@ CatNet::ErrorCode CatNet::mouseMoveAuto(int16_t x, int16_t y, int16_t ms) {
     cmd_data.options = ms;
     cmd_data.value1 = x;
     cmd_data.value2 = y;
-    sendCmd(cmd_data);
-    return receiveAck(ms + 500);
+    return sendCmd(cmd_data);
 }
 
 CatNet::ErrorCode CatNet::mouseButton(uint16_t code, uint16_t value) {
@@ -263,14 +261,14 @@ bool CatNet::isKeyboardPressed(uint16_t code) {
     return keyboard_state.isKeyPressed(code);
 }
 
-bool CatNet::isLockKeyPressed(uint16_t code) const {
+bool CatNet::isLockKeyPressed(uint16_t code) {
     if (!is_monitor) {
         return false;
     }
     return (lock_state & code) != 0;
 }
 
-CatNet::ErrorCode  CatNet::blockedMouse(uint16_t code, uint16_t value) {
+CatNet::ErrorCode CatNet::blockedMouse(uint16_t code, uint16_t value) {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -283,7 +281,7 @@ CatNet::ErrorCode  CatNet::blockedMouse(uint16_t code, uint16_t value) {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
+CatNet::ErrorCode CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -296,7 +294,7 @@ CatNet::ErrorCode  CatNet::blockedKeyboard(uint16_t code, uint16_t value) {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::unblockedMouseAll() {
+CatNet::ErrorCode CatNet::unblockedMouseAll() {
     if (!is_init) {
         return INIT_FAILED;
     }
@@ -306,7 +304,7 @@ CatNet::ErrorCode  CatNet::unblockedMouseAll() {
     return sendCmd(cmd_data);
 }
 
-CatNet::ErrorCode  CatNet::unblockedKeyboardAll() {
+CatNet::ErrorCode CatNet::unblockedKeyboardAll() {
     if (!is_init) {
         return INIT_FAILED;
     }
