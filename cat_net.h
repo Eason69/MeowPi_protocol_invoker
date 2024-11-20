@@ -8,7 +8,6 @@
 #include <bitset>
 #include <cstdint>
 #include <aes.hpp>
-#include <random>
 #include "input-event-codes.h"
 
 #define AES_BLOCK_SIZE 16
@@ -102,14 +101,13 @@ private:
             }
         }
 
-        bool isKeyPressed(uint16_t key) {
+        [[nodiscard]] bool isKeyPressed(uint16_t key) const {
             if (key <= KEY_CNT) {
                 return keyStateBitset.test(key);
             }
             return false;
         }
     };
-
 public:
     /**
      * @brief 表示NET操作的错误代码
@@ -207,12 +205,13 @@ public:
      */
     ErrorCode init(const std::string& box_ip, int box_port, const std::string& uuid, int milliseconds = 5000);
 
+    /**
+    * 反初始化，销毁
+    */
     void unInit();
 
     /**
      * 开启鼠键事件监听
-     * @param server_port 本机监听的端口
-     * @param milliseconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
      * @return ErrorCode
      */
     ErrorCode monitor();
@@ -341,11 +340,9 @@ private:
 private:
     void startReceive();
 
-    ErrorCode sendCmd(CmdData data, int milliseconds = 200);
+    ErrorCode sendCmd(CmdData data);
 
     void hidHandle(std::size_t receive_len);
-
-    ErrorCode receiveAck(CmdData data, int milliseconds);
 
     static int aes128CBCEncrypt(const unsigned char* buf, int buf_len, const unsigned char* key, const unsigned char* iv,
                                 unsigned char* encrypt_buf) {
