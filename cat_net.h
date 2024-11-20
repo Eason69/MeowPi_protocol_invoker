@@ -2,16 +2,16 @@
 #define CAT_NET_H
 
 #include <asio.hpp>
-#include <cctype>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
 #include <bitset>
 #include <cstdint>
-#include <cstring>
-#include <openssl/aes.h>
-#include <openssl/rand.h>
+#include <aes.hpp>
+#include <random>
 #include "input-event-codes.h"
+
+#define AES_BLOCK_SIZE 16
 
 class CatNet {
 private:
@@ -102,13 +102,14 @@ private:
             }
         }
 
-        [[nodiscard]] bool isKeyPressed(uint16_t key) const {
+        bool isKeyPressed(uint16_t key) {
             if (key <= KEY_CNT) {
                 return keyStateBitset.test(key);
             }
             return false;
         }
     };
+
 public:
     /**
      * @brief 表示NET操作的错误代码
@@ -201,7 +202,7 @@ public:
      * @param box_ip 盒子ip
      * @param box_port 盒子端口
      * @param uuid 盒子uuid
-     * @param seconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
+     * @param milliseconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
      * @return ErrorCode
      */
     ErrorCode init(const std::string& box_ip, int box_port, const std::string& uuid, int milliseconds = 5000);
@@ -211,7 +212,7 @@ public:
     /**
      * 开启鼠键事件监听
      * @param server_port 本机监听的端口
-     * @param seconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
+     * @param milliseconds 初始化盒子响应ACK超时时间 单位ms -1为无限等待
      * @return ErrorCode
      */
     ErrorCode monitor();
@@ -291,7 +292,7 @@ public:
      * @param code NumLock CapsLock ScrLOCK
      * @return 按下true 释放false
      */
-    bool isLockKeyPressed(uint16_t code) const;
+    bool isLockKeyPressed(uint16_t code);
 
     // 屏蔽部分
     /**
@@ -340,84 +341,84 @@ private:
 private:
     void startReceive();
 
-    ErrorCode sendCmd(CmdData data);
+    ErrorCode sendCmd(CmdData data, int milliseconds = 200);
 
     void hidHandle(std::size_t receive_len);
 
-    ErrorCode receiveAck(int milliseconds);
+    ErrorCode receiveAck(CmdData data, int milliseconds);
 
-    static int aes128CBCEncrypt(const unsigned char *buf, int buf_len, const unsigned char *key, const unsigned char *iv,
-                                unsigned char *encrypt_buf) {
-        EVP_CIPHER_CTX *ctx;
+    static int aes128CBCEncrypt(const unsigned char* buf, int buf_len, const unsigned char* key, const unsigned char* iv,
+                                unsigned char* encrypt_buf) {
+        std::vector<unsigned char> padded_buf(buf, buf + buf_len);
+        int padding = 16 - (buf_len % 16);
+        padded_buf.insert(padded_buf.end(), padding, static_cast<unsigned char>(padding));
 
-        int len;
-        int ciphertext_len;
-        memcpy(encrypt_buf, iv, AES_BLOCK_SIZE);
+        std::array<unsigned char, 176> expanded_key{};
+        key_expansion(key, expanded_key.data());
 
-        ctx = EVP_CIPHER_CTX_new();
-        if (!ctx) {
-            return -1;
+        std::memcpy(encrypt_buf, iv, 16);
+        unsigned char* output = encrypt_buf + 16;
+
+        for (size_t i = 0; i < padded_buf.size(); i += 16) {
+            for (int j = 0; j < 16; ++j) {
+                output[j] = padded_buf[i + j] ^ (i == 0 ? iv[j] : output[j - 16]);
+            }
+
+            add_round_key(output, expanded_key.data());
+
+            for (int round = 1; round < 10; ++round) {
+                aes_encrypt_round(output, expanded_key.data() + round * 16);
+            }
+
+            sub_bytes(output);
+            shift_rows(output);
+            add_round_key(output, expanded_key.data() + 160);
+
+            output += 16;
         }
 
-        if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return -1;
-        }
-
-        if (EVP_EncryptUpdate(ctx, encrypt_buf + AES_BLOCK_SIZE, &len, buf, buf_len) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return -1;
-        }
-        ciphertext_len = len;
-
-        if (EVP_EncryptFinal_ex(ctx, encrypt_buf + AES_BLOCK_SIZE + len, &len) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return -1;
-        }
-        ciphertext_len += len;
-
-        ciphertext_len += AES_BLOCK_SIZE;
-
-        EVP_CIPHER_CTX_free(ctx);
-
-        return ciphertext_len;
+        return static_cast<int>(16 + padded_buf.size());
     }
 
-    static int aes128CBCDecrypt(const unsigned char *encrypt_buf, int encrypt_buf_len, const unsigned char *key,
-                                unsigned char *decrypt_buf) {
-        EVP_CIPHER_CTX *ctx;
-
-        int len;
-        int decryptBufLen;
-
-        unsigned char iv[AES_BLOCK_SIZE];
-        memcpy(iv, encrypt_buf, AES_BLOCK_SIZE);
-
-        ctx = EVP_CIPHER_CTX_new();
-        if (!ctx) {
+    static int aes128CBCDecrypt(const unsigned char* encrypt_buf, int encrypt_buf_len, const unsigned char* key,
+                                unsigned char* decrypt_buf) {
+        if (encrypt_buf_len % 16 != 0 || encrypt_buf_len < 32) {
             return -1;
         }
 
-        if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr, key, iv) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
+        std::array<unsigned char, 176> expanded_key{};
+        key_expansion(key, expanded_key.data());
+
+        const unsigned char* iv = encrypt_buf;
+        const unsigned char* input = encrypt_buf + 16;
+        unsigned char* output = decrypt_buf;
+        int input_len = encrypt_buf_len - 16;
+
+        for (int i = 0; i < input_len; i += 16) {
+            std::array<unsigned char, 16> temp{};
+            std::memcpy(temp.data(), input + i, 16);
+
+            add_round_key(temp.data(), expanded_key.data() + 160);
+            inv_shift_rows(temp.data());
+            inv_sub_bytes(temp.data());
+
+            for (int round = 9; round > 0; --round) {
+                aes_decrypt_round(temp.data(), expanded_key.data() + round * 16);
+            }
+
+            add_round_key(temp.data(), expanded_key.data());
+
+            for (int j = 0; j < 16; ++j) {
+                output[i + j] = temp[j] ^ (i == 0 ? iv[j] : input[i + j - 16]);
+            }
+        }
+
+        int padding = output[input_len - 1];
+        if (padding < 1 || padding > 16) {
             return -1;
         }
 
-        if (EVP_DecryptUpdate(ctx, decrypt_buf, &len, encrypt_buf + AES_BLOCK_SIZE, encrypt_buf_len - AES_BLOCK_SIZE) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return -1;
-        }
-        decryptBufLen = len;
-
-        if (EVP_DecryptFinal_ex(ctx, decrypt_buf + len, &len) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return -1;
-        }
-        decryptBufLen += len;
-
-        EVP_CIPHER_CTX_free(ctx);
-
-        return decryptBufLen;
+        return input_len - padding;
     }
 
     static unsigned char *expandTo16Bytes(const std::string& cat_uuid) {
@@ -434,6 +435,16 @@ private:
         }
 
         return enc_key;
+    }
+
+    static void generateRandomIV(unsigned char *iv, size_t size) {
+        std::random_device rd;
+        std::mt19937 generator(rd());
+        std::uniform_int_distribution<int> distribution(0, 255);
+
+        for (size_t i = 0; i < size; ++i) {
+            iv[i] = static_cast<unsigned char>(distribution(generator));
+        }
     }
 };
 
