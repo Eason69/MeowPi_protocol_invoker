@@ -165,6 +165,7 @@ CatNet::ErrorCode CatNet::sendCmd(CmdData data) {
         if (size <= 0) {
             return SEND_FAILED;
         }
+        return SUCCESS;
     } catch (asio::system_error &) {
         return SEND_FAILED;
     }
